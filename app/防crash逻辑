@@ -1,0 +1,138 @@
+什么，软件又崩溃了。。。。。。。
+在这个时候总是很气愤，作为一个软件为什么你不能自己处理bug。那我们能不能让崩溃的地方可控也就是防止软件crash，就显得水平不那么菜了。。。hiahiahia。那就来吧。
+
+##  要做到防crash首先要捕获系统抛出的不能处理的异常，把异常像JavaIO抛出的IO异常一样自己消化掉，然后让Looper继续looper()拿到接下来的message，整个Handler机制又开始转起来了。。。也就是成为了一个不会crash的软件了  ##
+
+----------------------------------------------------------------------------
+##第一步 ：捕获异常  ##
+
+>1.自定义一个Thread.UncaughtExceptionHandler类
+>2.调用Thread.setDefaultUncaughtExceptionHandler(UncaughtExceptionHandler eh)方法，使异常信息回调到自定义的uncaughtException中;
+>3.在自定义的uncaughtException方法中处理异常，如上传日志、保存为文件等。
+
+
+1.自定义Thread.UncaughtExceptionHandler类
+  
+    class CrashHandler implements Thread.UncaughtExceptionHandler {
+    @Override
+    public void uncaughtException(Thread t, final Throwable e) {
+      }
+    }
+
+
+2.设置异常处理
+
+    public void initHandler(final UncaughtExceptionCallBack uncaughtExceptionCallBack) {
+        Thread.setDefaultUncaughtExceptionHandler(this);
+    }
+
+3.异常回调处理信息
+
+    @Override
+    public void uncaughtException(Thread t, final Throwable e) {
+        Log.e("CrashHandler  ", "偶吼吼，抓到错误信息了" + t.getName() + e.toString());
+    }
+
+4.在Application的onCreate方法中调用initHandler方法就OK了
+
+----------------------------------------------------------------
+
+##  第二部：上边完成了基本的运行时异常回调处理，下面进行如何防止应用因为运行时异常崩溃  ##
+
+GitHub上大佬的思路是将Looper进行异常捕获，然后进行异常分发，把这个异常消费掉以后接着从MessageQueue中取下一个Message进行处理，那我们的过程就有了。
+>1.捕获异常
+>2.回调出去并进行相应的处理
+
+代码实现思路：创建一个自定义的Thread.UncaughtExceptionHandler类，在Application中进行初始化事件的分发。
+
+1.创建类
+
+
+    class CrashHandler implements Thread.UncaughtExceptionHandler{
+
+    /**自定义的异常处理回调*/
+    private UncaughtExceptionCallBack uncaughtExceptionCallBack;
+
+    public interface UncaughtExceptionCallBack{
+        void caughtUncaughtException(Thread t,Throwable e);
+    }
+
+    private static CrashHandler crashHandler;
+
+    public static synchronized CrashHandler getInstance(){
+        if (crashHandler == null){
+            synchronized (CrashHandler.class){
+                if (crashHandler == null) {
+                    crashHandler = new CrashHandler();
+                }
+            }
+        }
+        return crashHandler;
+    }
+
+    /**
+     * 设置自定义的运行时异常处理
+     * @param uncaughtExceptionCallBack
+     */
+    public void initHandler(final UncaughtExceptionCallBack uncaughtExceptionCallBack){
+        this.uncaughtExceptionCallBack = uncaughtExceptionCallBack;
+
+        Thread.setDefaultUncaughtExceptionHandler(this);
+         /**
+         * 为什么要通过new Handler.post方式而不是直接在主线程中任意位置执行 
+         * while (true) { 
+         *      try { 
+         *          Looper.loop(); 
+         *      } catch (Throwable e) {
+         *      } 
+         *  }
+         *
+         * 这是因为该方法是个死循环，若在主线程中，比如在Activity的onCreate中执行时
+         * 会导致while后面的代码得不到执行，activity的生命周期也就不能完整执行，
+         * 通过Handler.post方式可以保证不影响该条消息中后面的逻辑。
+         */
+        new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                while (true) {
+                    try {
+                        Looper.loop();
+                    } catch (Throwable e) {
+                        if (uncaughtExceptionCallBack != null) {
+                            uncaughtExceptionCallBack.caughtUncaughtException(Looper.getMainLooper().getThread(), e);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    @Override
+    public void uncaughtException(Thread t, final Throwable e) {
+        if (uncaughtExceptionCallBack != null) {
+            uncaughtExceptionCallBack.caughtUncaughtException(Looper.getMainLooper().getThread(), e);
+        }
+    }
+    }
+
+  
+
+2.Application中初始化事件
+
+    public class MyApplication extends Application {
+    @Override
+    public void onCreate() {
+        super.onCreate();
+
+        CrashHandler.getInstance().initHandler(new CrashHandler.UncaughtExceptionCallBack() {
+            @Override
+            public void caughtUncaughtException(Thread t, Throwable e) {
+                Log.e("CrashHandler  ","偶吼吼，抓到错误信息了"+t.getName()+e.toString());
+            }
+        });
+    }
+    }
+
+----------------------------------------------------------------------
+就酱，我们的软件长大一点点了，可以自己报错了。。。（还是增长自己的代码姿势才是王道）
+整个流程仿照的GitHub一个封装好的Cockroach框架1.0版本，仰望大佬，大佬链接奉上:https://github.com/android-notes/Cockroach。
